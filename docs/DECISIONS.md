@@ -73,8 +73,32 @@ Formato: data, decisao, motivo, alternativas descartadas.
 - Motivo: mesma garantia (at-least-once + idempotencia) e mesmo tratamento de erro nos
   dois consumers, sem duplicar codigo e sem contar leituras duas vezes no retry.
 - Descartado: reaplicar o lote inteiro no retry (contaria velocidades duas vezes nas janelas).
+- Atualizacao: o sink grava no Postgres antes de publicar no Kafka
+  (`PostgresKafkaSink`), para nao republicar tudo quando so o banco esta fora.
 
 ## D11 - 2026-10-14 - Guarda contra timestamp no futuro nas janelas
 - Decisao: leitura com `event_ts` mais de 5 minutos a frente de `collected_at` nao entra
   nas janelas (contador "future").
 - Motivo: um relogio de GPS errado empurraria o watermark e fecharia janelas cedo demais.
+
+## D12 - 2026-10-14 - Correcoes apos revisao de codigo
+- `parse_ts` levanta TypeError para tipos invalidos; `from_dict`/`flatten_posicao`
+  tratam o caso; o decode dos consumers trata qualquer falha como mensagem malformada.
+  Uma mensagem envenenada nao derruba mais nenhum servico.
+- O replay ancora o inicio em max(agora, ultimo event_ts do topico + intervalo),
+  lido do fim de cada particao (`producer/topic_tail.py`). Reiniciar o producer ou
+  fazer `make down`/`make up` nao faz o tempo de evento voltar.
+- O watermark das janelas e por particao (minimo entre as particoes).
+- Portas so em 127.0.0.1; tags de imagem fixas; token so no producer e no recorder.
+- `Settings` nao mostra token nem senha no repr; as esperas de inicializacao
+  respeitam SIGTERM; decode e sink compartilhados em `common/stream_loop.py`.
+- Falhas de entrega logadas em resumo por coleta.
+
+## D13 - 2026-10-14 - Limitacoes aceitas
+- `bus_positions` nao tem retencao automatica; `make prune h=24` apaga leituras antigas.
+  Em live sao centenas de milhares de linhas por hora. Alternativa futura: particionamento por dia.
+- Se o consumer de alertas reiniciar no meio de uma parada que ja alertou, a
+  sequencia recomeca e pode gerar um segundo alerta (outro `stopped_since`) para a mesma parada.
+- O consumer de metricas roda com uma unica instancia. As mensagens sao particionadas
+  por veiculo; duas instancias calculariam janelas parciais da mesma linha. Escalar exigiria
+  reparticionar por linha em um topico intermediario.

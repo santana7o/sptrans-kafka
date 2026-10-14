@@ -8,7 +8,7 @@
 # Todas as dependencias tem wheel para linux/arm64 (aarch64) e amd64, entao
 # nenhum compilador e instalado.
 
-FROM python:3.12-slim AS base
+FROM python:3.12.7-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

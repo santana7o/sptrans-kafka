@@ -9,7 +9,7 @@ TOKEN_CHECK = grep -qE '^SPTRANS_TOKEN=["'\'']?[^"'\''[:space:]]' .env
 
 .DEFAULT_GOAL := help
 
-.PHONY: help env up down clean logs ps test test-local replay live record e2e psql sample \
+.PHONY: help env up down clean logs ps test test-local replay live record e2e psql sample prune \
 	require-token urls
 
 help: ## Mostra esta ajuda
@@ -83,3 +83,7 @@ psql: env ## Abre o psql no banco do container
 
 sample: env ## Regenera o sample sintetico (data/samples/sample_synthetic.jsonl.gz)
 	$(COMPOSE) run --rm --no-deps --build recorder python -m producer.synthetic
+
+h ?= 24
+prune: env ## Apaga de bus_positions leituras mais antigas que h horas (padrao 24) relativas ao ultimo dado
+	$(COMPOSE) exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "DELETE FROM bus_positions WHERE event_ts < (SELECT max(event_ts) FROM bus_positions) - make_interval(hours => $(h));"'

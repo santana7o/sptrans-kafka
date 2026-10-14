@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Iterable
 
 from common.config import Settings
 from common.log import get_logger
+from common.runtime import ShutdownFlag, sleep_or_shutdown
 
 if TYPE_CHECKING:  # pragma: no cover
     from confluent_kafka import Consumer, Message, Producer
@@ -63,8 +64,11 @@ def make_consumer(settings: Settings, group_id: str, topics: Iterable[str]) -> "
     return consumer
 
 
-def wait_for_kafka(settings: Settings, timeout_s: float = 120.0) -> None:
-    """Bloqueia ate o broker responder (list_topics) ou estoura TimeoutError."""
+def wait_for_kafka(settings: Settings, timeout_s: float = 120.0, shutdown: ShutdownFlag | None = None) -> None:
+    """Bloqueia ate o broker responder (list_topics) ou estoura TimeoutError.
+
+    Com ``shutdown``, a espera e interrompida por SIGTERM (levanta ShutdownRequested).
+    """
     from confluent_kafka.admin import AdminClient
 
     admin = AdminClient({"bootstrap.servers": settings.kafka_bootstrap_servers, "logger": _RDKAFKA_LOGGER})
@@ -79,7 +83,7 @@ def wait_for_kafka(settings: Settings, timeout_s: float = 120.0) -> None:
             if time.monotonic() > deadline:
                 raise TimeoutError("kafka indisponivel") from exc
             log.warning("aguardando kafka", error=str(exc), retry_in_s=delay)
-            time.sleep(delay)
+            sleep_or_shutdown(delay, shutdown)
             delay = min(delay * 2, 10.0)
 
 

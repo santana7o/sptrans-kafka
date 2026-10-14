@@ -10,12 +10,11 @@ from collections import Counter
 from typing import Any, Sequence
 
 from common.config import Settings, load_settings
-from common.db import connect
 from common.kafka_utils import make_consumer, make_producer, wait_for_kafka
 from common.log import get_logger, setup_logging
-from common.runtime import ShutdownFlag
+from common.runtime import ShutdownFlag, ShutdownRequested
 from common.schemas import BusAlert, BusPosition
-from common.stream_loop import KafkaPublisher, StreamLoop
+from common.stream_loop import KafkaPublisher, PostgresKafkaSink, StreamLoop
 from common.tracker import SpeedTracker
 from consumers.alerts.detector import StoppedVehicleDetector
 
@@ -49,7 +48,7 @@ class AlertsProcessor:
             StoppedVehicleDetector(settings.alert_speed_kmh, settings.alert_min_minutes, settings.terminal_radius_m),
         )
 
-    def process(self, positions: Sequence[BusPosition]) -> list[BusAlert]:
+    def process(self, positions: Sequence[BusPosition], partitions: Sequence[int] | None = None) -> list[BusAlert]:
         alerts: list[BusAlert] = []
         for pos in sorted(positions, key=lambda p: p.event_ts):
             reading = self.tracker.update(pos)
@@ -89,53 +88,25 @@ def alert_params(alert: BusAlert) -> dict[str, Any]:
     }
 
 
-class AlertsSink:
-    """Publica em bus-alerts e grava em bus_alerts (idempotente por alert_id)."""
-
-    def __init__(self, settings: Settings, publisher: KafkaPublisher) -> None:
-        self._settings = settings
-        self._publisher = publisher
-        self._conn = None
-
-    def _connection(self):
-        if self._conn is None or self._conn.closed:
-            self._conn = connect(self._settings)
-        return self._conn
-
-    def deliver(self, outputs: Sequence[BusAlert]) -> None:
-        self._publisher.publish(outputs)
-        conn = self._connection()
-        try:
-            with conn.cursor() as cur:
-                cur.executemany(INSERT_SQL, [alert_params(a) for a in outputs])
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        for alert in outputs:
-            log.info("alerta emitido", alert_id=alert.alert_id, vehicle_id=alert.vehicle_id,
-                     line_sign=alert.line_sign, stopped_minutes=alert.stopped_minutes)
-
-    def reset(self) -> None:
-        if self._conn is not None:
-            try:
-                self._conn.close()
-            finally:
-                self._conn = None
-
-    def close(self) -> None:
-        self.reset()
-
-
 def main() -> None:
     settings = load_settings()
     setup_logging("alerts", settings.log_level)
     log.info("iniciando consumer de alertas", topic_in=settings.topic_raw, topic_out=settings.topic_alerts,
              group=GROUP_ID, alert_speed_kmh=settings.alert_speed_kmh, alert_min_minutes=settings.alert_min_minutes)
     shutdown = ShutdownFlag()
-    wait_for_kafka(settings)
-    sink = AlertsSink(settings, KafkaPublisher(make_producer(settings, "alerts-producer"), settings.topic_alerts))
-    sink._connection()
+    sink = PostgresKafkaSink(
+        settings,
+        KafkaPublisher(make_producer(settings, "alerts-producer"), settings.topic_alerts),
+        INSERT_SQL,
+        alert_params,
+        name="alerts",
+    )
+    try:
+        sink.connect(shutdown)
+        wait_for_kafka(settings, shutdown=shutdown)
+    except ShutdownRequested:
+        log.info("encerrado durante a inicializacao")
+        return
     loop = StreamLoop(
         consumer=make_consumer(settings, GROUP_ID, [settings.topic_raw]),
         processor=AlertsProcessor.from_settings(settings),

@@ -59,6 +59,11 @@ Campos extras na resposta devem ser ignorados sem erro.
 | bus-alerts | vehicle_id | BusAlert JSON | 1 | alerts | (Kafka UI / consumidores futuros) |
 
 Consumer groups: `persistence-consumer`, `metrics-consumer`, `alerts-consumer`.
+Entrega at-least-once: em falha entre publicar e commitar offsets, `bus-metrics` e
+`bus-alerts` podem conter mensagens repetidas. Consumidores desses topicos devem
+deduplicar pela chave + `window_start` (metricas) ou por `alert_id` (alertas). As
+tabelas do Postgres ja sao idempotentes. O consumer de metricas roda com uma unica
+instancia (D13).
 Todos os valores sao JSON UTF-8 compacto; datas ISO 8601 UTC com sufixo `Z`.
 
 ### 3.1 BusPosition (bus-positions-raw)
@@ -70,8 +75,9 @@ Todos os valores sao JSON UTF-8 compacto; datas ISO 8601 UTC com sufixo `Z`.
  "collected_at":"2017-05-31T20:29:02Z","reference_time":"20:28","source":"live","schema_version":1}
 ```
 
-Gerado por `common.schemas.flatten_posicao`. O producer descarta duplicatas
-(mesmo `vehicle_id` + mesmo `event_ts`) antes de publicar. Coordenadas zeradas sao
+Gerado por `common.schemas.flatten_posicao`. O producer descarta duplicatas antes de
+publicar: leitura com `event_ts` igual ou anterior ao ultimo publicado para o mesmo
+`vehicle_id` (repetida ou fora de ordem). Coordenadas zeradas sao
 publicadas (dado bruto) e filtradas no processamento.
 
 ### 3.2 LineMetric (bus-metrics)
@@ -245,7 +251,7 @@ Referencia de "agora" = `max(event_ts)` em `bus_positions` (funciona em live e r
 | kafka | imagem apache/kafka (KRaft) |
 | kafka-init | cria os 3 topicos (idempotente) |
 | kafka-ui | provectuslabs/kafka-ui, porta 8080 |
-| postgres | postgres:16, porta 5432, monta `sql/` em `/docker-entrypoint-initdb.d` |
+| postgres | postgres:16.4-alpine, porta 5432, monta `sql/` em `/docker-entrypoint-initdb.d` |
 | producer | `python -m producer.main` (le MODE) |
 | persistence | `python -m consumers.persistence.main` |
 | metrics | `python -m consumers.metrics.main` |

@@ -4,14 +4,17 @@ Ciclo de cada lote:
 1. ``consume`` de ate ``batch_size`` mensagens (ou ``poll_timeout_s``);
 2. desserializa em BusPosition (malformada: log e ignora; o offset dela e commitado);
 3. aplica o lote ao estado em memoria via ``processor.process`` -> lista de saidas;
-4. entrega as saidas: publica no Kafka (com flush) e grava no Postgres;
+4. entrega as saidas: grava no Postgres (commit) e depois publica no Kafka (flush);
 5. SO ENTAO commita os offsets.
 
 Reprocessamento sem contar duas vezes: o lote e aplicado ao estado UMA vez (passo 3) e
 as saidas ficam em ``pending`` ate a entrega dar certo. Se publicar ou gravar falhar,
 apenas as saidas pendentes sao reenviadas (com backoff), sem reaplicar mensagens ao
-estado. Publicacao e gravacao sao idempotentes (chaves deterministicas, upsert/ON
-CONFLICT), entao reenviar depois de uma falha parcial nao duplica dados.
+estado. A gravacao e idempotente (upsert/ON CONFLICT), entao regravar nao duplica
+linhas. No Kafka, uma falha depois de publicar (rara: so se o flush confirmar e o
+processo cair antes do commit de offsets) pode repetir mensagens nos topicos de saida;
+consumidores desses topicos deduplicam pela chave/alert_id (CONTRACTS secao 3).
+Gravar antes de publicar evita republicar tudo quando apenas o banco esta fora.
 """
 
 from __future__ import annotations
@@ -32,7 +35,9 @@ Out = TypeVar("Out")
 class Processor(Protocol[Out]):
     """Logica de negocio com estado em memoria."""
 
-    def process(self, positions: Sequence[BusPosition]) -> list[Out]: ...
+    def process(self, positions: Sequence[BusPosition], partitions: Sequence[int]) -> list[Out]:
+        """``partitions[i]`` e a particao Kafka de ``positions[i]``."""
+        ...
 
     def on_idle(self) -> list[Out]: ...
 
@@ -47,19 +52,35 @@ class Sink(Protocol[Out]):
     def reset(self) -> None: ...
 
 
-def decode_positions(messages: Sequence[Any]) -> tuple[list[BusPosition], int]:
-    """Desserializa mensagens Kafka. Retorna (posicoes, malformadas)."""
+def decode_positions_with_partitions(
+    messages: Sequence[Any],
+) -> tuple[list[BusPosition], list[int], int]:
+    """Desserializa mensagens Kafka. Retorna (posicoes, particoes, malformadas).
+
+    Mensagens com erro do Kafka sao puladas. Qualquer falha de desserializacao conta
+    como malformada e nunca derruba o servico (mensagem envenenada).
+    """
     positions: list[BusPosition] = []
+    partitions: list[int] = []
     malformed = 0
     for msg in messages:
         if msg.error() is not None:
             continue
         try:
-            positions.append(BusPosition.from_json_bytes(msg.value()))
-        except SchemaError as exc:
+            position = BusPosition.from_json_bytes(msg.value())
+        except Exception as exc:  # noqa: BLE001 - SchemaError ou erro inesperado de parsing
             malformed += 1
             log.warning("mensagem malformada ignorada", topic=msg.topic(),
                         partition=msg.partition(), offset=msg.offset(), error=str(exc))
+            continue
+        positions.append(position)
+        partitions.append(msg.partition())
+    return positions, partitions, malformed
+
+
+def decode_positions(messages: Sequence[Any]) -> tuple[list[BusPosition], int]:
+    """Desserializa mensagens Kafka. Retorna (posicoes, malformadas)."""
+    positions, _, malformed = decode_positions_with_partitions(messages)
     return positions, malformed
 
 
@@ -136,11 +157,11 @@ class StreamLoop(Generic[Out]):
         self._idle_flushed = False
         for msg in messages:
             err = msg.error()
-            if err is not None and not _is_partition_eof(err):
+            if err is not None and not is_partition_eof(err):
                 log.error("erro do kafka na mensagem", error=str(err))
-        positions, malformed = decode_positions(messages)
+        positions, partitions, malformed = decode_positions_with_partitions(messages)
         try:
-            outputs = self._processor.process(positions)
+            outputs = self._processor.process(positions, partitions)
         except Exception:  # noqa: BLE001 - bug de logica nao derruba o servico
             log.exception("erro inesperado ao processar lote; lote ignorado", messages=len(messages))
             outputs = []
@@ -175,7 +196,7 @@ class StreamLoop(Generic[Out]):
                 log.warning("erro ao fechar consumer", error=str(exc))
 
 
-def _is_partition_eof(error: Any) -> bool:
+def is_partition_eof(error: Any) -> bool:
     try:
         from confluent_kafka import KafkaError
 
@@ -213,3 +234,64 @@ class KafkaPublisher:
             raise RuntimeError(f"{remaining} mensagens nao entregues ao kafka apos flush")
         if errors:
             raise RuntimeError(f"{len(errors)} falhas de entrega ao kafka: {errors[0]}")
+
+
+class PostgresKafkaSink:
+    """Destino padrao: grava as saidas no Postgres (commit) e depois publica no Kafka.
+
+    ``sql`` e um INSERT idempotente (upsert ou ON CONFLICT DO NOTHING) com placeholders
+    nomeados; ``params`` converte cada saida no dicionario de parametros.
+    """
+
+    def __init__(
+        self,
+        settings: Any,
+        publisher: KafkaPublisher,
+        sql: str,
+        params: Callable[[Any], dict[str, Any]],
+        name: str,
+        connect_fn: Callable[..., Any] | None = None,
+    ) -> None:
+        self._settings = settings
+        self._publisher = publisher
+        self._sql = sql
+        self._params = params
+        self._name = name
+        if connect_fn is None:
+            from common.db import connect as connect_fn
+        self._connect_fn = connect_fn
+        self._conn: Any = None
+
+    def connect(self, shutdown: ShutdownFlag | None = None) -> None:
+        if self._conn is None or self._conn.closed:
+            self._conn = self._connect_fn(self._settings, shutdown=shutdown)
+
+    def deliver(self, outputs: Sequence[Any]) -> None:
+        if not outputs:
+            return
+        self.connect()
+        conn = self._conn
+        try:
+            with conn.cursor() as cur:
+                cur.executemany(self._sql, [self._params(o) for o in outputs])
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception as rb_exc:  # noqa: BLE001 - conexao quebrada; a excecao original importa
+                log.warning("rollback falhou", error=str(rb_exc).strip())
+            raise
+        self._publisher.publish(outputs)
+        log.info("saidas entregues", kind=self._name, count=len(outputs))
+
+    def reset(self) -> None:
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                self._conn = None
+
+    def close(self) -> None:
+        self.reset()

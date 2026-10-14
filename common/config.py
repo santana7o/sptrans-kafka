@@ -7,7 +7,7 @@ estao documentados em ``docs/CONTRACTS.md`` e ``.env.example``.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 VALID_MODES = ("live", "replay")
 
@@ -60,7 +60,7 @@ class Settings:
 
     # API Olho Vivo (modo live)
     sptrans_base_url: str
-    sptrans_token: str
+    sptrans_token: str = field(repr=False)
     poll_interval_seconds: int
     http_timeout_seconds: float
     http_max_retries: int
@@ -78,7 +78,7 @@ class Settings:
     postgres_port: int
     postgres_db: str
     postgres_user: str
-    postgres_password: str
+    postgres_password: str = field(repr=False)
 
     # Consumer de persistencia
     persistence_batch_size: int

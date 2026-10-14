@@ -45,7 +45,7 @@ def _require(data: dict[str, Any], name: str) -> Any:
 def _loads(raw: bytes | str) -> dict[str, Any]:
     try:
         data = json.loads(raw)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, AttributeError) as exc:
         raise SchemaError(f"JSON invalido: {exc}") from exc
     if not isinstance(data, dict):
         raise SchemaError("evento deve ser um objeto JSON")
@@ -109,7 +109,7 @@ class BusPosition(_Event):
             )
         except SchemaError:
             raise
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, AttributeError) as exc:
             raise SchemaError(f"BusPosition invalido: {exc}") from exc
 
 
@@ -156,7 +156,7 @@ class LineMetric(_Event):
             )
         except SchemaError:
             raise
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, AttributeError) as exc:
             raise SchemaError(f"LineMetric invalido: {exc}") from exc
 
 
@@ -205,7 +205,7 @@ class BusAlert(_Event):
             )
         except SchemaError:
             raise
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, AttributeError) as exc:
             raise SchemaError(f"BusAlert invalido: {exc}") from exc
 
 
@@ -227,15 +227,24 @@ def flatten_posicao(
     skipped = 0
     reference_time = str(payload.get("hr") or "")
     lines: Iterable[dict[str, Any]] = payload.get("l") or []
+    if not isinstance(lines, list):
+        return events, 1
     for line in lines:
+        if not isinstance(line, dict):
+            skipped += 1
+            continue
+        vehicles = line.get("vs") or []
+        if not isinstance(vehicles, list):
+            skipped += 1
+            continue
         try:
             line_code = int(line["cl"])
             direction = int(line["sl"])
         except (KeyError, TypeError, ValueError):
-            skipped += len(line.get("vs") or []) if isinstance(line, dict) else 1
+            skipped += len(vehicles)
             continue
         line_sign = str(line.get("c") or "")
-        for vehicle in line.get("vs") or []:
+        for vehicle in vehicles:
             try:
                 events.append(
                     BusPosition(
@@ -254,7 +263,7 @@ def flatten_posicao(
                         source=source,
                     )
                 )
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, AttributeError):
                 skipped += 1
     return events, skipped
 

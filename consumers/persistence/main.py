@@ -25,8 +25,9 @@ from typing import Any, Callable, Protocol, Sequence
 from common.config import Settings, load_settings
 from common.kafka_utils import commit_offsets, make_consumer, wait_for_kafka
 from common.log import get_logger, setup_logging
-from common.runtime import ShutdownFlag
-from common.schemas import BusPosition, SchemaError
+from common.runtime import ShutdownFlag, ShutdownRequested
+from common.schemas import BusPosition
+from common.stream_loop import decode_positions, is_partition_eof
 
 GROUP_ID = "persistence-consumer"
 
@@ -49,38 +50,8 @@ class MessageConsumer(Protocol):
     def close(self) -> None: ...
 
 
-def _is_partition_eof(error: Any) -> bool:
-    try:
-        from confluent_kafka import KafkaError
-
-        return error.code() == KafkaError._PARTITION_EOF
-    except Exception:  # noqa: BLE001 - biblioteca ausente ou objeto de erro de teste
-        return False
-
-
-def decode_messages(messages: Sequence[Any]) -> tuple[list[BusPosition], int]:
-    """Desserializa mensagens Kafka em BusPosition.
-
-    Mensagens com erro do Kafka sao puladas (sem contar como malformadas). Retorna
-    (posicoes_validas, quantidade_de_malformadas).
-    """
-    positions: list[BusPosition] = []
-    malformed = 0
-    for msg in messages:
-        if msg.error() is not None:
-            continue
-        try:
-            positions.append(BusPosition.from_json_bytes(msg.value()))
-        except SchemaError as exc:
-            malformed += 1
-            log.warning(
-                "mensagem malformada ignorada",
-                topic=msg.topic(),
-                partition=msg.partition(),
-                offset=msg.offset(),
-                error=str(exc),
-            )
-    return positions, malformed
+# Alias de compatibilidade: a desserializacao vive em common.stream_loop.
+decode_messages = decode_positions
 
 
 class BatchPersister:
@@ -125,7 +96,7 @@ class BatchPersister:
             )
             for msg in msgs or []:
                 err = msg.error()
-                if err is not None and not _is_partition_eof(err):
+                if err is not None and not is_partition_eof(err):
                     log.error("erro do kafka na mensagem", error=str(err))
             batch.extend(msgs or [])
         return batch
@@ -136,7 +107,7 @@ class BatchPersister:
         if not batch:
             return True
         started = self._clock()
-        positions, malformed = decode_messages(batch)
+        positions, malformed = decode_positions(batch)
 
         delay = self._retry_initial_s
         attempts = 0
@@ -154,7 +125,10 @@ class BatchPersister:
                     error=str(exc).strip(),
                     retry_in_s=delay,
                 )
-                self._writer.reset()
+                try:
+                    self._writer.reset()
+                except Exception as reset_exc:  # noqa: BLE001
+                    log.warning("falha ao reiniciar writer", error=str(reset_exc).strip())
                 if self._shutdown.wait(delay):
                     log.warning("encerrando com lote nao gravado; sera reprocessado", messages=len(batch))
                     return False
@@ -202,12 +176,20 @@ class BatchPersister:
 
 
 def build_persister(settings: Settings, shutdown: ShutdownFlag) -> tuple[BatchPersister, Any]:
-    """Cria writer (ja conectado) e consumer reais. Retorna (persister, writer)."""
+    """Cria writer (ja conectado) e consumer reais. Retorna (persister, writer).
+
+    As esperas por Postgres e Kafka sao interrompidas por SIGTERM (``ShutdownRequested``);
+    nesse caso o writer ja aberto e fechado antes de propagar.
+    """
     from consumers.persistence.writer import PostgresPositionWriter
 
-    writer = PostgresPositionWriter(settings)
-    writer.connect(timeout_s=120.0)
-    wait_for_kafka(settings)
+    writer = PostgresPositionWriter(settings, shutdown=shutdown)
+    try:
+        writer.connect(timeout_s=120.0)
+        wait_for_kafka(settings, shutdown=shutdown)
+    except BaseException:
+        writer.close()
+        raise
     consumer = make_consumer(settings, GROUP_ID, [settings.topic_raw])
     persister = BatchPersister(
         consumer=consumer,
@@ -230,7 +212,11 @@ def main() -> None:
         flush_seconds=settings.persistence_flush_seconds,
     )
     shutdown = ShutdownFlag()
-    persister, writer = build_persister(settings, shutdown)
+    try:
+        persister, writer = build_persister(settings, shutdown)
+    except ShutdownRequested:
+        log.info("encerramento solicitado durante a inicializacao; nada foi consumido")
+        return
     try:
         persister.run()
     finally:

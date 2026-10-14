@@ -13,14 +13,17 @@ def parse_ts(value: str | datetime) -> datetime:
     """Converte ISO 8601 (com 'Z', offset ou sem fuso) em datetime UTC aware.
 
     Strings sem fuso sao interpretadas como UTC (a API documenta 'ta' em UTC).
+    Outros tipos (None, numero, lista) levantam TypeError.
     """
     if isinstance(value, datetime):
         dt = value
-    else:
+    elif isinstance(value, str):
         text = value.strip()
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
         dt = datetime.fromisoformat(text)
+    else:
+        raise TypeError(f"timestamp deve ser str ISO 8601 ou datetime, recebido {type(value).__name__}")
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)

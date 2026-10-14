@@ -9,16 +9,19 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from common.config import ConfigError, Settings, load_settings
 from common.kafka_utils import make_producer, wait_for_kafka
 from common.log import get_logger, setup_logging
-from common.runtime import ShutdownFlag
+from common.timeutils import to_iso
+from common.runtime import ShutdownFlag, ShutdownRequested
 
 log = get_logger("producer.main")
 
 FINAL_FLUSH_TIMEOUT_S = 15.0
+ANCHOR_READ_TIMEOUT_S = 10.0
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -41,6 +44,24 @@ def check_settings(settings: Settings) -> str | None:
     return None
 
 
+def find_replay_anchor(settings: Settings, timeout_s: float = ANCHOR_READ_TIMEOUT_S) -> datetime | None:
+    """Maior instante ja publicado no topico raw, ou None.
+
+    Falha de leitura nao impede o replay: loga warning e devolve None (ancora = agora).
+    """
+    from producer.topic_tail import read_last_event_ts
+
+    try:
+        last = read_last_event_ts(settings, timeout_s=timeout_s)
+    except Exception as exc:  # noqa: BLE001 - qualquer falha cai no comportamento padrao
+        log.warning("nao foi possivel ler o fim do topico; replay ancorado em agora",
+                    topic=settings.topic_raw, error=str(exc), error_type=type(exc).__name__)
+        return None
+    log.info("fim do topico lido para ancorar o replay", topic=settings.topic_raw,
+             last_event_ts=to_iso(last) if last else None)
+    return last
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
@@ -58,16 +79,23 @@ def main(argv: list[str] | None = None) -> int:
     log.info("producer iniciando", mode=settings.mode, bootstrap=settings.kafka_bootstrap_servers,
              topic=settings.topic_raw)
 
+    # Handlers de SIGTERM/SIGINT instalados antes da espera: um shutdown durante a espera
+    # pelo Kafka encerra de forma limpa (ShutdownRequested).
+    shutdown = ShutdownFlag()
     try:
-        wait_for_kafka(settings, timeout_s=args.kafka_wait_timeout)
+        wait_for_kafka(settings, timeout_s=args.kafka_wait_timeout, shutdown=shutdown)
+    except ShutdownRequested:
+        log.info("shutdown recebido durante a espera pelo kafka, encerrando")
+        return 0
     except TimeoutError:
         log.error("kafka indisponivel, encerrando", bootstrap=settings.kafka_bootstrap_servers,
                   waited_s=args.kafka_wait_timeout)
         return 1
 
-    # Os handlers de sinal sao instalados so depois da espera pelo Kafka: durante a espera
-    # um SIGTERM encerra o processo imediatamente (wait_for_kafka usa time.sleep).
-    shutdown = ShutdownFlag()
+    last_event_ts = None
+    if settings.mode == "replay" and settings.replay_rebase_timestamps:
+        last_event_ts = find_replay_anchor(settings)
+
     producer = make_producer(settings, client_id=f"producer-{settings.mode}")
     try:
         if settings.mode == "live":
@@ -77,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             from producer.replay import run_replay
 
-            run_replay(settings, producer, shutdown)
+            run_replay(settings, producer, shutdown, last_event_ts=last_event_ts)
     except Exception as exc:  # noqa: BLE001 - erro fatal: loga e sai com codigo 1
         log.exception("erro fatal no producer", error_type=type(exc).__name__)
         return 1

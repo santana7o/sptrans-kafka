@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from common.config import Settings
 from common.log import get_logger
+from common.runtime import ShutdownFlag, sleep_or_shutdown
 
 if TYPE_CHECKING:  # pragma: no cover
     import psycopg
@@ -14,8 +15,16 @@ if TYPE_CHECKING:  # pragma: no cover
 log = get_logger(__name__)
 
 
-def connect(settings: Settings, timeout_s: float = 120.0, autocommit: bool = False) -> "psycopg.Connection":
-    """Abre conexao, tentando novamente com backoff exponencial ate ``timeout_s``."""
+def connect(
+    settings: Settings,
+    timeout_s: float = 120.0,
+    autocommit: bool = False,
+    shutdown: ShutdownFlag | None = None,
+) -> "psycopg.Connection":
+    """Abre conexao, tentando novamente com backoff exponencial ate ``timeout_s``.
+
+    Com ``shutdown``, a espera e interrompida por SIGTERM (levanta ShutdownRequested).
+    """
     import psycopg
 
     deadline = time.monotonic() + timeout_s
@@ -29,5 +38,5 @@ def connect(settings: Settings, timeout_s: float = 120.0, autocommit: bool = Fal
             if time.monotonic() > deadline:
                 raise
             log.warning("aguardando postgres", error=str(exc).strip(), retry_in_s=delay)
-            time.sleep(delay)
+            sleep_or_shutdown(delay, shutdown)
             delay = min(delay * 2, 10.0)

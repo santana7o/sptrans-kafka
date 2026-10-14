@@ -1,3 +1,4 @@
+# Portas publicadas apenas em 127.0.0.1 (acesso so a partir desta maquina).
 # Stack completa do pipeline de onibus de Sao Paulo.
 # Uso: make up (cria .env a partir de .env.example se necessario).
 # Contratos de servicos e variaveis: docs/CONTRACTS.md (secoes 3, 6 e 7).
@@ -23,6 +24,16 @@ x-internal-connections: &internal-connections
   KAFKA_BOOTSTRAP_SERVERS: kafka:19092
   POSTGRES_HOST: postgres
   POSTGRES_PORT: "5432"
+  # O token da SPTrans so e necessario no producer e no recorder; nos demais
+  # servicos ele e sobrescrito para vazio (menor exposicao do segredo).
+  SPTRANS_TOKEN: ""
+
+# Producer e recorder recebem o token do .env.
+x-token-connections: &token-connections
+  KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  SPTRANS_TOKEN: ${SPTRANS_TOKEN:-}
 
 services:
   kafka:
@@ -30,7 +41,7 @@ services:
     hostname: kafka
     restart: unless-stopped
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"
     environment:
       CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
       KAFKA_NODE_ID: 1
@@ -78,7 +89,7 @@ services:
     image: provectuslabs/kafka-ui:v0.7.2
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: sptrans
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
@@ -88,10 +99,10 @@ services:
         condition: service_healthy
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.4-alpine
     restart: unless-stopped
     ports:
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-sptrans}
       POSTGRES_USER: ${POSTGRES_USER:-sptrans}
@@ -114,7 +125,7 @@ services:
     <<: *python-service
     command: ["python", "-m", "producer.main"]
     environment:
-      <<: *internal-connections
+      <<: *token-connections
       # Permite "MODE=live docker compose up" (make live / make replay); padrao vem do .env.
       MODE: ${MODE:-replay}
     volumes:
@@ -173,7 +184,7 @@ services:
       STREAMLIT_SERVER_HEADLESS: "true"
       STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=4)"]
       interval: 15s
@@ -192,7 +203,7 @@ services:
     restart: "no"
     command: ["python", "-m", "producer.record"]
     environment:
-      <<: *internal-connections
+      <<: *token-connections
     volumes:
       - ./data/samples:/app/data/samples
 

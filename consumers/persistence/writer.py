@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Sequence
 from common.config import Settings
 from common.db import connect
 from common.log import get_logger
+from common.runtime import ShutdownFlag
 from common.schemas import BusPosition
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -111,17 +112,27 @@ class PostgresPositionWriter:
     reconexao na proxima escrita.
     """
 
-    def __init__(self, settings: Settings, connect_timeout_s: float = 0.0) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        connect_timeout_s: float = 0.0,
+        shutdown: ShutdownFlag | None = None,
+    ) -> None:
         self._settings = settings
         self._connect_timeout_s = connect_timeout_s
+        self._shutdown = shutdown
         self._conn: "psycopg.Connection | None" = None
 
     def connect(self, timeout_s: float | None = None) -> None:
-        """Abre a conexao se necessario (com retry ate ``timeout_s``, via common.db)."""
+        """Abre a conexao se necessario (com retry ate ``timeout_s``, via common.db).
+
+        Com ``shutdown`` no construtor, a espera levanta ``ShutdownRequested`` em SIGTERM.
+        """
         if self._conn is None or self._conn.closed:
             self._conn = connect(
                 self._settings,
                 timeout_s=self._connect_timeout_s if timeout_s is None else timeout_s,
+                shutdown=self._shutdown,
             )
 
     def write(self, positions: Sequence[BusPosition]) -> int:
@@ -139,7 +150,9 @@ class PostgresPositionWriter:
             except psycopg.DataError as exc:
                 # Valor que o banco nao aceita (ex.: caractere NUL em texto). Isola as
                 # linhas ruins para que um evento nao bloqueie o lote inteiro para sempre.
-                conn.rollback()
+                if not self._safe_rollback():
+                    # Conexao quebrada: propaga o DataError original (retry com reconexao).
+                    raise
                 log.warning("lote com dado invalido, gravando linha a linha", error=str(exc).strip())
                 inserted, _ = insert_positions_one_by_one(conn, positions)
             conn.commit()
@@ -148,13 +161,16 @@ class PostgresPositionWriter:
             self._safe_rollback()
             raise
 
-    def _safe_rollback(self) -> None:
+    def _safe_rollback(self) -> bool:
+        """Rollback que nunca mascara a excecao original. Retorna True se funcionou."""
         if self._conn is None or self._conn.closed:
-            return
+            return False
         try:
             self._conn.rollback()
+            return True
         except Exception as exc:  # noqa: BLE001 - conexao possivelmente quebrada
             log.warning("rollback falhou", error=str(exc).strip())
+            return False
 
     def reset(self) -> None:
         """Fecha a conexao (se houver) para que a proxima escrita reconecte."""

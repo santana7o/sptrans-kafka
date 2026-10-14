@@ -24,13 +24,15 @@ class MetricsProcessor:
             WindowAggregator(settings.window_minutes, settings.window_lateness_seconds),
         )
 
-    def process(self, positions: Sequence[BusPosition]) -> list[LineMetric]:
+    def process(self, positions: Sequence[BusPosition], partitions: Sequence[int] | None = None) -> list[LineMetric]:
+        if partitions is None:
+            partitions = [0] * len(positions)
         # Ordena por tempo de evento: dentro de um lote, mensagens de particoes
         # diferentes chegam intercaladas.
-        for pos in sorted(positions, key=lambda p: p.event_ts):
+        for pos, partition in sorted(zip(positions, partitions), key=lambda item: item[0].event_ts):
             reading = self.tracker.update(pos)
             self.speed_status[reading.speed.status.value if reading.speed else "first_reading"] += 1
-            self.aggregator.add(reading)
+            self.aggregator.add(reading, partition)
         return self.aggregator.close_ready()
 
     def on_idle(self) -> list[LineMetric]:

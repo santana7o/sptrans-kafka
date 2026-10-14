@@ -40,19 +40,25 @@ class WindowAggregator:
         self.lateness = timedelta(seconds=lateness_seconds)
         self._clock = clock
         self._open: dict[WindowKey, _WindowState] = {}
-        self._max_event_ts: datetime | None = None
+        # Maior event_ts visto em cada particao Kafka. O watermark usa a particao mais
+        # atrasada: em catch-up de backlog o librdkafka entrega blocos de uma particao
+        # antes da outra, e um watermark global descartaria as leituras da atrasada.
+        # Particao parada segura o watermark; o flush por ociosidade cobre esse caso.
+        self._max_by_partition: dict[int, datetime] = {}
         self._closed_until: datetime | None = None  # janelas com fim <= isto ja foram emitidas
         self.counters = {"added": 0, "late": 0, "future": 0, "invalid": 0, "emitted": 0}
 
     @property
     def watermark(self) -> datetime | None:
-        return None if self._max_event_ts is None else self._max_event_ts - self.lateness
+        if not self._max_by_partition:
+            return None
+        return min(self._max_by_partition.values()) - self.lateness
 
     @property
     def open_windows(self) -> int:
         return len(self._open)
 
-    def add(self, reading: TrackedReading) -> bool:
+    def add(self, reading: TrackedReading, partition: int = 0) -> bool:
         """Inclui a leitura na janela do seu event_ts. Retorna False se descartada."""
         pos = reading.position
         if not reading.valid_coordinate:
@@ -77,8 +83,9 @@ class WindowAggregator:
         if speed is not None:
             state.speed_sum += speed
             state.speed_count += 1
-        if self._max_event_ts is None or pos.event_ts > self._max_event_ts:
-            self._max_event_ts = pos.event_ts
+        current = self._max_by_partition.get(partition)
+        if current is None or pos.event_ts > current:
+            self._max_by_partition[partition] = pos.event_ts
         self.counters["added"] += 1
         return True
 

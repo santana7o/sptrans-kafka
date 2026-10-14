@@ -6,6 +6,21 @@ import signal
 import threading
 
 
+class ShutdownRequested(Exception):
+    """Levantada por esperas de inicializacao quando o servico recebe SIGTERM/SIGINT."""
+
+
+def sleep_or_shutdown(seconds: float, shutdown: "ShutdownFlag | None") -> None:
+    """Espera ``seconds``; com flag, retorna antes e levanta ShutdownRequested se sinalizado."""
+    if shutdown is None:
+        import time
+
+        time.sleep(seconds)
+        return
+    if shutdown.wait(seconds):
+        raise ShutdownRequested()
+
+
 class ShutdownFlag:
     """Flag setada ao receber SIGTERM/SIGINT. Use ``while not flag.is_set(): ...``.
 

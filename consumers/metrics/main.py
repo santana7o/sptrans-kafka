@@ -6,15 +6,14 @@ offsets esta em ``common.stream_loop.StreamLoop``.
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any
 
-from common.config import Settings, load_settings
-from common.db import connect
+from common.config import load_settings
 from common.kafka_utils import make_consumer, make_producer, wait_for_kafka
 from common.log import get_logger, setup_logging
-from common.runtime import ShutdownFlag
+from common.runtime import ShutdownFlag, ShutdownRequested
 from common.schemas import LineMetric
-from common.stream_loop import KafkaPublisher, StreamLoop
+from common.stream_loop import KafkaPublisher, PostgresKafkaSink, StreamLoop
 from consumers.metrics.processor import MetricsProcessor
 
 GROUP_ID = "metrics-consumer"
@@ -58,52 +57,25 @@ def metric_params(metric: LineMetric) -> dict[str, Any]:
     }
 
 
-class MetricsSink:
-    """Publica em bus-metrics e faz upsert em line_metrics."""
-
-    def __init__(self, settings: Settings, publisher: KafkaPublisher) -> None:
-        self._settings = settings
-        self._publisher = publisher
-        self._conn = None
-
-    def _connection(self):
-        if self._conn is None or self._conn.closed:
-            self._conn = connect(self._settings)
-        return self._conn
-
-    def deliver(self, outputs: Sequence[LineMetric]) -> None:
-        self._publisher.publish(outputs)
-        conn = self._connection()
-        try:
-            with conn.cursor() as cur:
-                cur.executemany(UPSERT_SQL, [metric_params(m) for m in outputs])
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        log.info("janelas emitidas", windows=len(outputs),
-                 window_start=str(outputs[0].window_start) if outputs else None)
-
-    def reset(self) -> None:
-        if self._conn is not None:
-            try:
-                self._conn.close()
-            finally:
-                self._conn = None
-
-    def close(self) -> None:
-        self.reset()
-
-
 def main() -> None:
     settings = load_settings()
     setup_logging("metrics", settings.log_level)
     log.info("iniciando consumer de metricas", topic_in=settings.topic_raw, topic_out=settings.topic_metrics,
              group=GROUP_ID, window_minutes=settings.window_minutes)
     shutdown = ShutdownFlag()
-    wait_for_kafka(settings)
-    sink = MetricsSink(settings, KafkaPublisher(make_producer(settings, "metrics-producer"), settings.topic_metrics))
-    sink._connection()
+    sink = PostgresKafkaSink(
+        settings,
+        KafkaPublisher(make_producer(settings, "metrics-producer"), settings.topic_metrics),
+        UPSERT_SQL,
+        metric_params,
+        name="metrics",
+    )
+    try:
+        sink.connect(shutdown)
+        wait_for_kafka(settings, shutdown=shutdown)
+    except ShutdownRequested:
+        log.info("encerrado durante a inicializacao")
+        return
     loop = StreamLoop(
         consumer=make_consumer(settings, GROUP_ID, [settings.topic_raw]),
         processor=MetricsProcessor.from_settings(settings),
