@@ -1,0 +1,220 @@
+# Stack completa do pipeline de onibus de Sao Paulo.
+# Uso: make up (cria .env a partir de .env.example se necessario).
+# Contratos de servicos e variaveis: docs/CONTRACTS.md (secoes 3, 6 e 7).
+#
+# Rede: os containers falam com o Kafka em kafka:19092 (listener interno) e com o
+# PostgreSQL em postgres:5432. O host usa localhost:9092 e localhost:5432.
+
+name: sptrans-kafka
+
+# Base comum dos servicos Python (mesma imagem, ver docs/DECISIONS.md D06).
+x-python-service: &python-service
+  build:
+    context: .
+    dockerfile: docker/python.Dockerfile
+    target: runtime
+  image: sptrans-kafka-python:local
+  env_file: .env
+  restart: unless-stopped
+  init: true
+
+# Conexoes sobrescritas para os nomes internos da rede do compose.
+x-internal-connections: &internal-connections
+  KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+
+services:
+  kafka:
+    image: apache/kafka:3.8.1
+    hostname: kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    environment:
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:19092,CONTROLLER://:9093,PLAINTEXT_HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  kafka-init:
+    image: apache/kafka:3.8.1
+    restart: "no"
+    entrypoint: ["/bin/sh", "/scripts/create-topics.sh"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      TOPIC_RAW: ${TOPIC_RAW:-bus-positions-raw}
+      TOPIC_METRICS: ${TOPIC_METRICS:-bus-metrics}
+      TOPIC_ALERTS: ${TOPIC_ALERTS:-bus-alerts}
+    volumes:
+      - ./docker/create-topics.sh:/scripts/create-topics.sh:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: sptrans
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+      DYNAMIC_CONFIG_ENABLED: "false"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sptrans}
+      POSTGRES_USER: ${POSTGRES_USER:-sptrans}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sptrans}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # -h 127.0.0.1: durante os scripts de init o servidor temporario escuta so no
+      # socket unix; testar via TCP evita marcar "healthy" antes do schema existir.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  producer:
+    <<: *python-service
+    command: ["python", "-m", "producer.main"]
+    environment:
+      <<: *internal-connections
+      # Permite "MODE=live docker compose up" (make live / make replay); padrao vem do .env.
+      MODE: ${MODE:-replay}
+    volumes:
+      - ./data/samples:/app/data/samples:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  persistence:
+    <<: *python-service
+    command: ["python", "-m", "consumers.persistence.main"]
+    environment:
+      <<: *internal-connections
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  metrics:
+    <<: *python-service
+    command: ["python", "-m", "consumers.metrics.main"]
+    environment:
+      <<: *internal-connections
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  alerts:
+    <<: *python-service
+    command: ["python", "-m", "consumers.alerts.main"]
+    environment:
+      <<: *internal-connections
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  dashboard:
+    <<: *python-service
+    command:
+      - streamlit
+      - run
+      - dashboard/app.py
+      - --server.port
+      - "8501"
+      - --server.address
+      - 0.0.0.0
+    environment:
+      <<: *internal-connections
+      STREAMLIT_SERVER_HEADLESS: "true"
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    ports:
+      - "8501:8501"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Ferramentas (profile "tools"): nao sobem no "make up".
+
+  recorder:
+    <<: *python-service
+    profiles: ["tools"]
+    restart: "no"
+    command: ["python", "-m", "producer.record"]
+    environment:
+      <<: *internal-connections
+    volumes:
+      - ./data/samples:/app/data/samples
+
+  tests:
+    build:
+      context: .
+      dockerfile: docker/python.Dockerfile
+      target: dev
+    image: sptrans-kafka-python-dev:local
+    profiles: ["tools"]
+    restart: "no"
+    init: true
+    env_file: .env
+    command: ["pytest", "-q"]
+    environment:
+      <<: *internal-connections
+      # O repositorio e montado somente leitura: sem cache do pytest nem bytecode.
+      PYTEST_ADDOPTS: -p no:cacheprovider
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - .:/app:ro
+
+volumes:
+  kafka-data:
+  postgres-data:
