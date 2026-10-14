@@ -1,0 +1,13 @@
+[project]
+name = "sptrans-kafka"
+version = "0.1.0"
+description = "Pipeline de streaming da posicao dos onibus de Sao Paulo com Apache Kafka"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "e2e: teste ponta a ponta que exige a stack Docker rodando (make up)",
+]

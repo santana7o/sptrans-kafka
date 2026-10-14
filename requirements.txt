@@ -1,0 +1,7 @@
+# Dependencias de runtime (todas as imagens Python usam este arquivo)
+confluent-kafka==2.6.1
+requests==2.32.3
+psycopg[binary]==3.2.3
+pandas==2.2.3
+streamlit==1.39.0
+pydeck==0.9.1

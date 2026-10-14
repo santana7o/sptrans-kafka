@@ -1,0 +1,28 @@
+# Segredos
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Dados: so o sample pequeno versionado entra no git
+data/samples/*
+!data/samples/sample_synthetic.jsonl.gz
+!data/samples/README.md
+data/recordings/
+
+# Sistema / IDE
+.DS_Store
+.idea/
+.vscode/
