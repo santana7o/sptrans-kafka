@@ -234,6 +234,7 @@ Referencia de "agora" = `max(event_ts)` em `bus_positions` (funciona em live e r
 | ALERT_MIN_MINUTES | 10 | tempo parado para alertar |
 | TERMINAL_RADIUS_M | 400 | raio dos terminais |
 | DASHBOARD_REFRESH_SECONDS | 30 | atualizacao do dashboard |
+| POSTGRES_HOST_PORT | 5432 | somente docker compose: porta publicada no host |
 
 ## 7. Pontos de entrada e servicos do compose
 

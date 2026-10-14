@@ -6,6 +6,7 @@ logica pura possam ser testados sem a biblioteca nativa instalada.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING, Iterable
 
@@ -16,6 +17,9 @@ if TYPE_CHECKING:  # pragma: no cover
     from confluent_kafka import Consumer, Message, Producer
 
 log = get_logger(__name__)
+
+# Logs internos do librdkafka passam pelo logging do Python (saida JSON padronizada).
+_RDKAFKA_LOGGER = logging.getLogger("librdkafka")
 
 
 def make_producer(settings: Settings, client_id: str) -> "Producer":
@@ -33,6 +37,7 @@ def make_producer(settings: Settings, client_id: str) -> "Producer":
             "batch.num.messages": 10000,
             "queue.buffering.max.messages": 200000,
             "message.timeout.ms": 120000,
+            "logger": _RDKAFKA_LOGGER,
         }
     )
 
@@ -51,7 +56,8 @@ def make_consumer(settings: Settings, group_id: str, topics: Iterable[str]) -> "
             "auto.offset.reset": "earliest",
             "session.timeout.ms": 45000,
             "max.poll.interval.ms": 300000,
-        }
+        },
+        logger=_RDKAFKA_LOGGER,
     )
     consumer.subscribe(list(topics))
     return consumer
@@ -61,7 +67,7 @@ def wait_for_kafka(settings: Settings, timeout_s: float = 120.0) -> None:
     """Bloqueia ate o broker responder (list_topics) ou estoura TimeoutError."""
     from confluent_kafka.admin import AdminClient
 
-    admin = AdminClient({"bootstrap.servers": settings.kafka_bootstrap_servers})
+    admin = AdminClient({"bootstrap.servers": settings.kafka_bootstrap_servers, "logger": _RDKAFKA_LOGGER})
     deadline = time.monotonic() + timeout_s
     delay = 1.0
     while True:
