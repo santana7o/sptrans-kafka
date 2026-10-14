@@ -65,3 +65,16 @@ Formato: data, decisao, motivo, alternativas descartadas.
 - Motivo: os dois primeiros niveis rodam em segundos sem infraestrutura; o terceiro
   valida a integracao real (Kafka, Postgres, healthchecks, imagens arm64).
 
+## D10 - 2026-10-14 - Loop de processamento compartilhado em common/stream_loop.py
+- Decisao: os consumers de metricas e alertas usam `common.stream_loop.StreamLoop`
+  (consume -> process -> publica + grava -> commit de offsets) e `KafkaPublisher`.
+  Cada lote e aplicado ao estado em memoria uma unica vez; as saidas ficam pendentes e
+  apenas elas sao reenviadas com backoff se Kafka ou Postgres falharem.
+- Motivo: mesma garantia (at-least-once + idempotencia) e mesmo tratamento de erro nos
+  dois consumers, sem duplicar codigo e sem contar leituras duas vezes no retry.
+- Descartado: reaplicar o lote inteiro no retry (contaria velocidades duas vezes nas janelas).
+
+## D11 - 2026-10-14 - Guarda contra timestamp no futuro nas janelas
+- Decisao: leitura com `event_ts` mais de 5 minutos a frente de `collected_at` nao entra
+  nas janelas (contador "future").
+- Motivo: um relogio de GPS errado empurraria o watermark e fecharia janelas cedo demais.

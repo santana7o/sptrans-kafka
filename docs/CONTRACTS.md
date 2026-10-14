@@ -122,6 +122,8 @@ Todas usam tempo de evento (`event_ts`). Parametros vem de `Settings`.
   em `line_metrics`) e descartada da memoria. Leitura que chega para janela ja fechada
   e descartada (contada em log).
 - Sem mensagens por `IDLE_FLUSH_SECONDS`: emite todas as janelas abertas (fim do replay).
+- Leitura com `event_ts` mais de 5 min a frente de `collected_at` e ignorada nas janelas (D11).
+- Dentro de um lote as leituras sao processadas em ordem de `event_ts`.
 
 ### 4.3 Alerta de onibus parado
 - Leitura "lenta": velocidade valida < `ALERT_SPEED_KMH` (2 km/h) e veiculo fora de
