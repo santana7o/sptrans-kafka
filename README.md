@@ -124,16 +124,21 @@ terminais (detalhes em [data/samples/README.md](data/samples/README.md)).
 
 ### Prints
 
-<!--
-Placeholders: as imagens ainda nao existem no repositorio.
-Para gerar: rode "make up", espere alguns minutos e salve capturas de tela de
-http://localhost:8501 em docs/img/dashboard.png e da pagina de consumer groups de
-http://localhost:8080 em docs/img/kafka-ui.png. Depois remova este comentario.
--->
+Capturas da stack rodando em modo replay (`make up`).
+
+Dashboard: KPIs da cidade e mapa ao vivo dos onibus.
 
 ![Dashboard](docs/img/dashboard.png)
 
-![Kafka UI](docs/img/kafka-ui.png)
+Rankings das linhas mais lentas e mais rapidas na ultima janela de 5 minutos.
+
+![Rankings por linha](docs/img/dashboard-rankings.png)
+
+Kafka UI: os tres topicos e os consumer groups estaveis.
+
+![Kafka UI - topicos](docs/img/kafka-ui-topics.png)
+
+![Kafka UI - consumer groups](docs/img/kafka-ui-consumers.png)
 
 ## Modo live com dados reais
 
