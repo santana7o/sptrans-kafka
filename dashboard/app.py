@@ -160,10 +160,26 @@ def _ranking_table(df: pd.DataFrame) -> pd.DataFrame:
         {
             "Linha": df["line_sign"].astype(str),
             "Sentido": df["direction"].map(direction_label),
-            "Velocidade media (km/h)": df["avg_speed_kmh"].astype(float).round(1),
-            "Veiculos": df["active_vehicles"].astype(int),
+            "km/h": df["avg_speed_kmh"].astype(float).round(1),
+            "Veic.": df["active_vehicles"].astype(int),
         }
     ).reset_index(drop=True)
+
+
+# Cabecalhos curtos e larguras fixas: com o layout centralizado, as duas tabelas lado a
+# lado tem ~350 px cada; cabecalhos longos empurravam velocidade e veiculos para fora
+# da area visivel.
+RANKING_COLUMNS = {
+    "Linha": st.column_config.TextColumn("Linha", width="small"),
+    "Sentido": st.column_config.TextColumn("Sentido", width="small"),
+    "km/h": st.column_config.NumberColumn("km/h", help="Velocidade media na janela", format="%.1f", width="small"),
+    "Veic.": st.column_config.NumberColumn("Veic.", help="Veiculos ativos na janela", format="%d", width="small"),
+}
+
+
+def _show_ranking(title: str, df: pd.DataFrame) -> None:
+    st.markdown(title)
+    st.dataframe(_ranking_table(df), hide_index=True, use_container_width=True, column_config=RANKING_COLUMNS)
 
 
 def render_rankings(metrics: pd.DataFrame) -> None:
@@ -178,11 +194,9 @@ def render_rankings(metrics: pd.DataFrame) -> None:
         return
     left, right = st.columns(2)
     with left:
-        st.markdown("**10 linhas mais lentas**")
-        st.dataframe(_ranking_table(slowest), hide_index=True, use_container_width=True)
+        _show_ranking("**10 linhas mais lentas**", slowest)
     with right:
-        st.markdown("**10 linhas mais rapidas**")
-        st.dataframe(_ranking_table(fastest), hide_index=True, use_container_width=True)
+        _show_ranking("**10 linhas mais rapidas**", fastest)
 
 
 def render_alerts(alerts: pd.DataFrame) -> None:
