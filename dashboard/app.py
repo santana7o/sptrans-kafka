@@ -210,13 +210,23 @@ def render_alerts(alerts: pd.DataFrame) -> None:
             "Linha": alerts["line_sign"].astype(str),
             "Sentido": alerts["direction"].map(direction_label),
             "Prefixo": alerts["vehicle_id"].astype(str),
-            "Tipo": alerts["alert_type"].astype(str),
             "Parado desde": fmt_local_series(alerts["stopped_since"]),
-            "Minutos parado": alerts["stopped_minutes"].astype(float).round(1),
-            "Ultima velocidade (km/h)": alerts["last_speed_kmh"].astype(float).round(1),
+            "Min. parado": alerts["stopped_minutes"].astype(float).round(1),
+            "km/h": alerts["last_speed_kmh"].astype(float).round(1),
         }
     ).reset_index(drop=True)
-    st.dataframe(table, hide_index=True, use_container_width=True)
+    # Sem a coluna de tipo (hoje so existe STOPPED_VEHICLE) e com cabecalhos curtos,
+    # para a tabela caber na largura do layout centralizado.
+    st.dataframe(
+        table,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Min. parado": st.column_config.NumberColumn("Min. parado", format="%.1f", width="small"),
+            "km/h": st.column_config.NumberColumn("km/h", help="Velocidade na leitura que disparou o alerta",
+                                                  format="%.1f", width="small"),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
