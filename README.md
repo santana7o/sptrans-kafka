@@ -13,7 +13,7 @@ estao operando agora nem qual veiculo esta parado ha muito tempo fora de um term
 Este projeto transforma essas fotografias em um fluxo de eventos e entrega:
 
 - ingestao continua da API (modo `live`) ou de arquivos gravados (modo `replay`, sem token);
-- um topico Kafka com uma mensagem por leitura de GPS, sem duplicatas;
+- um topico Kafka com uma mensagem por leitura de GPS, sem duplicatas enquanto o producer esta no ar;
 - velocidade media e quantidade de veiculos por linha e sentido, em janelas de 5 minutos;
 - alerta de onibus parado ha mais de 10 minutos fora de um terminal;
 - historico no PostgreSQL e um dashboard com mapa, KPIs, rankings de linhas e alertas;
@@ -243,8 +243,10 @@ com atraso de entrega nem com a velocidade do replay.
   sequencia de leituras lentas durar 10 minutos ou mais, sai um alerta. Uma leitura
   rapida ou dentro de terminal zera a sequencia; cada sequencia gera no maximo um alerta.
 
-Todos os limites sao configuraveis no `.env` (`WINDOW_MINUTES`, `MAX_SPEED_KMH`,
-`ALERT_SPEED_KMH`, `ALERT_MIN_MINUTES`, `TERMINAL_RADIUS_M` etc.).
+Os principais limites sao configuraveis no `.env` (`WINDOW_MINUTES`, `MAX_SPEED_KMH`,
+`ALERT_SPEED_KMH`, `ALERT_MIN_MINUTES`, `TERMINAL_RADIUS_M` etc.). Duas guardas sao
+constantes no codigo: a de 5 min para timestamps no futuro (`MAX_FUTURE_SKEW`) e o limite de
+3 janelas para uma particao parada deixar de segurar o watermark.
 
 ## Decisoes tecnicas
 
@@ -256,7 +258,7 @@ Resumo das principais; o registro completo (D01 a D13) esta em
 - **Sample versionado sintetico** (D03): ver limitacoes abaixo.
 - **Replay com rebase de timestamps** (D04): no replay, `ta` e `collected_at` sao
   deslocados para que a primeira coleta corresponda ao momento de inicio, e a cada volta
-  do loop soma-se a duracao do arquivo, para nao repetir eventos. `REPLAY_SPEED=5`
+  do loop soma-se a duracao do arquivo mais um intervalo tipico entre coletas, para nao repetir eventos. `REPLAY_SPEED=5`
   reproduz 5x mais rapido que o tempo real, entao o tempo de evento anda mais rapido que
   o relogio. Por isso as views do dashboard usam `max(event_ts)` como referencia de
   "agora", e nao `now()`. Ao reiniciar o producer, o replay continua a partir do ultimo
@@ -306,6 +308,12 @@ Resumo das principais; o registro completo (D01 a D13) esta em
 
 ## Testes
 
+Para rodar fora do container, crie o venv uma vez:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+```
+
 ```bash
 make test         # testes unitarios no container (pytest -m "not e2e")
 make test-local   # os mesmos testes no venv local (.venv)
@@ -346,3 +354,7 @@ no ar.
 ├── Makefile
 └── .env.example
 ```
+
+## Licenca
+
+MIT. Veja o arquivo [LICENSE](LICENSE).

@@ -3,6 +3,9 @@ name = "sptrans-kafka"
 version = "0.1.0"
 description = "Pipeline de streaming da posicao dos onibus de Sao Paulo com Apache Kafka"
 requires-python = ">=3.11"
+license = "MIT"
+readme = "README.md"
+authors = [{ name = "Felipe Gabriel Coelho de Santana" }]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

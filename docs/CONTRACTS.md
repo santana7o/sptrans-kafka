@@ -123,8 +123,9 @@ Todas usam tempo de evento (`event_ts`). Parametros vem de `Settings`.
   - `accessible_vehicles` / `accessible_pct`: entre os ativos;
   - `avg_speed_kmh`: media aritmetica das velocidades validas cuja leitura atual cai na
     janela; `None` se nao houver; `speed_samples` = quantidade.
-- Fechamento por watermark: `watermark = max(event_ts visto) - WINDOW_LATENESS_SECONDS`.
-  Janela com `window_end <= watermark` e emitida uma unica vez (bus-metrics + upsert
+- Fechamento por watermark: `watermark = min(maior event_ts de cada particao) - WINDOW_LATENESS_SECONDS`.
+  Enquanto alguma particao do topico ainda nao entregou dados o watermark nao avanca; uma
+  particao que fica 3 janelas atras deixa de segurar as demais (D12). Janela com `window_end <= watermark` e emitida uma unica vez (bus-metrics + upsert
   em `line_metrics`) e descartada da memoria. Leitura que chega para janela ja fechada
   e descartada (contada em log).
 - Sem mensagens por `IDLE_FLUSH_SECONDS`: emite todas as janelas abertas (fim do replay).
@@ -260,5 +261,6 @@ Referencia de "agora" = `max(event_ts)` em `bus_positions` (funciona em live e r
 | recorder (profile `tools`) | `python -m producer.record` |
 | tests (profile `tools`) | `pytest -q` |
 
-Todos os servicos Python usam a mesma imagem (`docker/python.Dockerfile`), com o
-repositorio copiado em `/app` e `PYTHONPATH=/app`.
+Todos os servicos Python usam o mesmo Dockerfile (`docker/python.Dockerfile`), com o
+repositorio copiado em `/app` e `PYTHONPATH=/app`: os servicos de runtime usam o target
+`runtime` e o servico `tests` usa o target `dev`, com o repositorio montado somente leitura.

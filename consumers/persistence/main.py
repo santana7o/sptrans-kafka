@@ -50,9 +50,6 @@ class MessageConsumer(Protocol):
     def close(self) -> None: ...
 
 
-# Alias de compatibilidade: a desserializacao vive em common.stream_loop.
-decode_messages = decode_positions
-
 
 class BatchPersister:
     """Loop de lote: consume -> decode -> grava/commit no banco -> commit de offsets."""

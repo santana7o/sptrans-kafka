@@ -1,7 +1,4 @@
-"""Consumer de persistencia sem Kafka e sem Postgres (fakes injetados).
-
-Base: testes do consumer de persistencia, adaptados as fixtures da suite.
-"""
+"""Consumer de persistencia sem Kafka e sem Postgres (fakes injetados)."""
 
 from __future__ import annotations
 
@@ -171,14 +168,14 @@ def test_run_with_real_commit_offsets_and_fake_consumer():
 
 
 def test_decode_messages():
-    positions, malformed = pm.decode_messages([_msg("a", 0), FakeMsg(b"[]", 1), FakeMsg(None, 2, err=FakeKafkaError())])
+    positions, malformed = pm.decode_positions([_msg("a", 0), FakeMsg(b"[]", 1), FakeMsg(None, 2, err=FakeKafkaError())])
     assert [p.vehicle_id for p in positions] == ["a"] and malformed == 1
 
 
 def test_poison_message_is_counted_as_malformed():
     poison = FakeMsg(b'{"vehicle_id":"1","line_code":1,"direction":1,"lat":-23.5,"lon":-46.6,'
                      b'"event_ts":1760443200,"collected_at":"2026-10-14T12:00:00Z"}', 1)
-    positions, malformed = pm.decode_messages([_msg("a", 0), poison])
+    positions, malformed = pm.decode_positions([_msg("a", 0), poison])
     assert len(positions) == 1 and malformed == 1
 
 

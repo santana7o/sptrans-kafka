@@ -84,10 +84,10 @@ flowchart LR
 | metrics | `python -m consumers.metrics.main` | kafka-init concluido, postgres saudavel |
 | alerts | `python -m consumers.alerts.main` | kafka-init concluido, postgres saudavel |
 | dashboard | `streamlit run dashboard/app.py`, porta 8501 | postgres saudavel |
-| recorder (profile `tools`) | `python -m producer.record` (usado por `make record` e `make sample`) | - |
+| recorder (profile `tools`) | `python -m producer.record` (`make record`; `make sample` usa o mesmo servico com `python -m producer.synthetic`) | - |
 | tests (profile `tools`) | `pytest` (usado por `make test` e `make e2e`) | - |
 
-Todos os servicos Python usam a mesma imagem (`docker/python.Dockerfile`, D06). Dentro da
+Todos os servicos Python usam o mesmo Dockerfile (`docker/python.Dockerfile`, D06): os de runtime usam o target `runtime` e o servico `tests` usa o target `dev`, com o repositorio montado somente leitura. Dentro da
 rede do compose os servicos falam com o Kafka em `kafka:19092` e com o banco em
 `postgres:5432`; pelo host, `localhost:9092` e `localhost:5432`.
 
@@ -151,9 +151,10 @@ flowchart TD
 - Rebase (D04, `REPLAY_REBASE_TIMESTAMPS=true`): a primeira coleta passa a ter o horario
   do inicio da reproducao, ou o ultimo `event_ts` ja publicado no topico mais um
   intervalo, se este for posterior (lido do fim de cada particao por
-  `producer/topic_tail.py`). Assim reiniciar o producer nunca faz o tempo voltar (D12). Os intervalos entre leituras de um mesmo veiculo sao
+  `producer/topic_tail.py`). Assim reiniciar o producer nunca faz o tempo voltar (D12).
+  Os intervalos entre leituras de um mesmo veiculo sao
   preservados, entao as velocidades continuam corretas. Como cada volta soma a duracao
-  do arquivo, nenhuma leitura repete um `event_ts` ja publicado e a idempotencia do
+  do arquivo mais um intervalo tipico entre coletas, nenhuma leitura repete um `event_ts` ja publicado e a idempotencia do
   banco nao descarta as voltas seguintes.
 - Aceleracao: com `REPLAY_SPEED=5`, 30 s entre coletas viram 6 s de relogio. O tempo de
   evento passa a andar 5x mais rapido que o relogio e fica a frente dele; por isso o

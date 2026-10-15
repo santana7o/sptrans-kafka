@@ -19,7 +19,8 @@ proposito os casos de borda do pipeline.
 Regenerar (deterministico, mesmo arquivo byte a byte):
 
 ```bash
-.venv/bin/python -m producer.synthetic
+make sample                          # no container, nao exige venv
+.venv/bin/python -m producer.synthetic   # ou, com o venv criado (ver README principal)
 ```
 
 Conteudo:
@@ -52,7 +53,7 @@ Casos de borda plantados:
 Com `SPTRANS_TOKEN` definido no `.env` (token gratuito em https://www.sptrans.com.br/desenvolvedores/):
 
 ```bash
-make record                      # ou: python -m producer.record
+make record
 ```
 
 Grava `RECORD_COLLECTIONS` coletas (padrao 20), uma a cada `POLL_INTERVAL_SECONDS`, em

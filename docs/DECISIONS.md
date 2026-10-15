@@ -25,7 +25,7 @@ Formato: data, decisao, motivo, alternativas descartadas.
 ## D04 - 2026-10-14 - Replay com rebase de timestamps
 - Decisao: no replay, todos os timestamps (`ta` e `collected_at`) sao deslocados para que a
   primeira coleta corresponda ao momento de inicio; a cada volta do loop soma-se a duracao do
-  arquivo. `REPLAY_SPEED` acelera a reproducao (padrao 5x).
+  arquivo mais um intervalo tipico entre coletas. `REPLAY_SPEED` acelera a reproducao (padrao 5x).
 - Motivo: o dashboard mostra dados "recentes", o loop nao gera duplicatas e as velocidades
   continuam corretas (intervalos de tempo de evento preservados).
 - Consequencia: com REPLAY_SPEED > 1 o tempo de evento anda mais rapido que o relogio. Por
@@ -40,7 +40,7 @@ Formato: data, decisao, motivo, alternativas descartadas.
 - Limitacao: coordenadas aproximadas; garagens e pontos finais que nao sao terminais podem gerar alertas.
 
 ## D06 - 2026-10-14 - Uma imagem Python para todos os servicos
-- Decisao: `docker/python.Dockerfile` unico; cada servico muda apenas o comando.
+- Decisao: `docker/python.Dockerfile` unico; cada servico muda apenas o comando (o servico de testes usa o target `dev` do mesmo Dockerfile).
 - Motivo: build unico e cache compartilhado; o codigo comum (`common/`) fica sempre consistente.
 - Descartado: uma imagem por servico (mais lento e duplicado para um projeto deste tamanho).
 
@@ -67,7 +67,7 @@ Formato: data, decisao, motivo, alternativas descartadas.
 
 ## D10 - 2026-10-14 - Loop de processamento compartilhado em common/stream_loop.py
 - Decisao: os consumers de metricas e alertas usam `common.stream_loop.StreamLoop`
-  (consume -> process -> publica + grava -> commit de offsets) e `KafkaPublisher`.
+  (consume -> process -> grava no Postgres -> publica no Kafka -> commit de offsets) e `KafkaPublisher`.
   Cada lote e aplicado ao estado em memoria uma unica vez; as saidas ficam pendentes e
   apenas elas sao reenviadas com backoff se Kafka ou Postgres falharem.
 - Motivo: mesma garantia (at-least-once + idempotencia) e mesmo tratamento de erro nos
@@ -85,8 +85,9 @@ Formato: data, decisao, motivo, alternativas descartadas.
 - `parse_ts` levanta TypeError para tipos invalidos; `from_dict`/`flatten_posicao`
   tratam o caso; o decode dos consumers trata qualquer falha como mensagem malformada.
   Uma mensagem envenenada nao derruba mais nenhum servico.
-- O replay ancora o inicio em max(agora, ultimo event_ts do topico + intervalo),
-  lido do fim de cada particao (`producer/topic_tail.py`). Reiniciar o producer ou
+- O replay ancora o inicio em max(agora, maior instante ja publicado + intervalo tipico +
+  defasagem da primeira coleta), onde o instante publicado e o maior entre `event_ts` e
+  `collected_at` das ultimas mensagens de cada particao (`producer/topic_tail.py`). Reiniciar o producer ou
   fazer `make down`/`make up` nao faz o tempo de evento voltar.
 - O watermark das janelas e por particao (minimo entre as particoes).
 - Portas so em 127.0.0.1; tags de imagem fixas; token so no producer e no recorder.
