@@ -102,8 +102,6 @@ def test_flatten_missing_accessible_defaults_to_false():
     assert events[0].accessible is False and events[0].reference_time == ""
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: flatten_posicao nao captura AttributeError de parse_ts; "
-                                       "um veiculo com 'ta': null derruba a coleta inteira")
 def test_flatten_null_ta_is_counted_as_malformed():
     payload = {"hr": "10:00", "l": [{"c": "X", "cl": 1, "sl": 1, "vs": [
         {"p": 1, "a": True, "ta": None, "py": -23.5, "px": -46.6},
@@ -113,8 +111,6 @@ def test_flatten_null_ta_is_counted_as_malformed():
     assert malformed == 1 and [e.vehicle_id for e in events] == ["2"]
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: flatten_posicao levanta TypeError quando 'vs' nao e lista "
-                                       "(ex. numero), em vez de contar como malformado")
 def test_flatten_non_list_vs_is_counted_as_malformed():
     payload = {"hr": "10:00", "l": [
         {"c": "X", "cl": 1, "sl": 1, "vs": 5},
@@ -219,8 +215,6 @@ def test_wrong_type_raises_schema_error(field, value):
         BusPosition.from_dict(data)
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: event_ts nao-string (numero/objeto) gera AttributeError em "
-                                       "parse_ts em vez de SchemaError; derruba os consumers (poison message)")
 @pytest.mark.parametrize("value", [1760443200, {"a": 1}])
 def test_non_string_timestamp_raises_schema_error(value):
     data = json.loads(make_position().to_json_bytes())

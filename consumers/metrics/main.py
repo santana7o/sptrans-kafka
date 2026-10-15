@@ -57,6 +57,16 @@ def metric_params(metric: LineMetric) -> dict[str, Any]:
     }
 
 
+def topic_partition_count(consumer: Any, topic: str) -> int:
+    """Quantidade de particoes do topico (1 se a consulta falhar)."""
+    try:
+        metadata = consumer.list_topics(topic, timeout=10)
+        return max(1, len(metadata.topics[topic].partitions))
+    except Exception as exc:  # noqa: BLE001 - na falha o watermark degrada para 1 particao
+        log.warning("nao foi possivel obter particoes do topico", topic=topic, error=str(exc))
+        return 1
+
+
 def main() -> None:
     settings = load_settings()
     setup_logging("metrics", settings.log_level)
@@ -76,9 +86,12 @@ def main() -> None:
     except ShutdownRequested:
         log.info("encerrado durante a inicializacao")
         return
+    consumer = make_consumer(settings, GROUP_ID, [settings.topic_raw])
+    partitions = topic_partition_count(consumer, settings.topic_raw)
+    log.info("particoes do topico de entrada", topic=settings.topic_raw, partitions=partitions)
     loop = StreamLoop(
-        consumer=make_consumer(settings, GROUP_ID, [settings.topic_raw]),
-        processor=MetricsProcessor.from_settings(settings),
+        consumer=consumer,
+        processor=MetricsProcessor.from_settings(settings, partitions),
         sink=sink,
         shutdown=shutdown,
         idle_flush_s=settings.idle_flush_seconds,

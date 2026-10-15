@@ -34,6 +34,8 @@ class WindowAggregator:
         window_minutes: int = 5,
         lateness_seconds: int = 60,
         clock: Callable[[], datetime] = utcnow,
+        expected_partitions: int = 1,
+        stall_windows: int = 3,
     ) -> None:
         self.window = timedelta(minutes=window_minutes)
         self.window_minutes = window_minutes
@@ -44,15 +46,26 @@ class WindowAggregator:
         # atrasada: em catch-up de backlog o librdkafka entrega blocos de uma particao
         # antes da outra, e um watermark global descartaria as leituras da atrasada.
         # Particao parada segura o watermark; o flush por ociosidade cobre esse caso.
+        # Particao que ainda nao entregou nada tambem segura o watermark, ate o tempo de
+        # evento avancar ``stall_windows`` janelas; o mesmo limite faz uma particao parada
+        # (sem dados novos) deixar de segurar as demais.
         self._max_by_partition: dict[int, datetime] = {}
+        self.expected_partitions = max(1, expected_partitions)
+        self.stall = self.window * max(1, stall_windows)
+        self._first_event_ts: datetime | None = None
         self._closed_until: datetime | None = None  # janelas com fim <= isto ja foram emitidas
         self.counters = {"added": 0, "late": 0, "future": 0, "invalid": 0, "emitted": 0}
 
     @property
     def watermark(self) -> datetime | None:
-        if not self._max_by_partition:
+        if not self._max_by_partition or self._first_event_ts is None:
             return None
-        return min(self._max_by_partition.values()) - self.lateness
+        global_max = max(self._max_by_partition.values())
+        progressed = global_max - self._first_event_ts
+        if len(self._max_by_partition) < self.expected_partitions and progressed < self.stall:
+            return None
+        active = [ts for ts in self._max_by_partition.values() if ts >= global_max - self.stall]
+        return min(active) - self.lateness
 
     @property
     def open_windows(self) -> int:
@@ -83,6 +96,8 @@ class WindowAggregator:
         if speed is not None:
             state.speed_sum += speed
             state.speed_count += 1
+        if self._first_event_ts is None or pos.event_ts < self._first_event_ts:
+            self._first_event_ts = pos.event_ts
         current = self._max_by_partition.get(partition)
         if current is None or pos.event_ts > current:
             self._max_by_partition[partition] = pos.event_ts

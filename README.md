@@ -48,7 +48,7 @@ entrega) em [docs/arquitetura.md](docs/arquitetura.md).
 | Linguagem | Python 3.12 nas imagens (codigo compativel com 3.11+) |
 | Mensageria | Apache Kafka 3.8 em modo KRaft (imagem `apache/kafka`), cliente `confluent-kafka` |
 | Observacao do Kafka | Kafka UI (`provectuslabs/kafka-ui`) |
-| Banco | PostgreSQL 16 (`postgres:16-alpine`), driver `psycopg` 3 |
+| Banco | PostgreSQL 16 (`postgres:16.4-alpine`), driver `psycopg` 3 |
 | Coleta HTTP | `requests` |
 | Dashboard | Streamlit, pydeck (mapa com base Carto, sem token), pandas |
 | Testes | pytest |
@@ -75,6 +75,9 @@ O que abrir:
 | localhost:9092 | Kafka (acesso pelo host) |
 | localhost:5432 | PostgreSQL (`make psql` abre um terminal SQL) |
 
+As portas sao publicadas apenas em `127.0.0.1` (acesso so a partir desta maquina), e o
+`SPTRANS_TOKEN` so e entregue aos containers `producer` e `recorder`.
+
 Os servicos levam alguns segundos para ficar saudaveis. As primeiras metricas aparecem
 quando a primeira janela de 5 minutos (em tempo de evento) fecha; com o replay acelerado
 5x isso leva no maximo pouco mais de um minuto de relogio.
@@ -89,6 +92,7 @@ Outros alvos uteis (lista completa com `make help`):
 | `make down` | Para e remove os containers (mantem os volumes) |
 | `make clean` | Para tudo e apaga os volumes do Kafka e do PostgreSQL |
 | `make replay` | Sobe a stack forcando `MODE=replay` |
+| `make prune h=24` | Apaga de `bus_positions` as leituras com mais de `h` horas (relativas ao ultimo dado) |
 | `make sample` | Regenera o sample sintetico |
 
 ### O que conferir no Kafka UI (http://localhost:8080)
@@ -222,8 +226,10 @@ com atraso de entrega nem com a velocidade do replay.
   menores que 1 s ou maiores que 10 min e velocidades acima de 100 km/h (salto de GPS).
 - **Janelas de metricas**: janelas fixas de 5 minutos alinhadas ao relogio UTC, por linha
   e sentido. Cada janela informa veiculos ativos, percentual de veiculos acessiveis e a
-  velocidade media. Uma janela fecha quando o maior `event_ts` visto passa do fim da
-  janela mais 60 s de tolerancia; ela e emitida uma unica vez. Leitura que chega para
+  velocidade media. Uma janela fecha quando o watermark passa do fim da janela; o
+  watermark e o menor entre os maiores `event_ts` de cada particao Kafka, menos 60 s de
+  tolerancia, para que uma particao atrasada (por exemplo, ao consumir backlog) nao
+  perca dados. Cada janela e emitida uma unica vez. Leitura que chega para
   janela ja fechada e descartada. Sem mensagens por 120 s, as janelas abertas sao
   emitidas (fim do replay). Leituras com `event_ts` mais de 5 min a frente da coleta sao
   ignoradas, para que um relogio de GPS errado nao feche janelas cedo demais.
@@ -237,7 +243,7 @@ Todos os limites sao configuraveis no `.env` (`WINDOW_MINUTES`, `MAX_SPEED_KMH`,
 
 ## Decisoes tecnicas
 
-Resumo das principais; o registro completo (D01 a D11) esta em
+Resumo das principais; o registro completo (D01 a D13) esta em
 [docs/DECISIONS.md](docs/DECISIONS.md).
 
 - **Tempo de evento em todo o processamento** (D01): resultados deterministicos e replay
@@ -248,13 +254,21 @@ Resumo das principais; o registro completo (D01 a D11) esta em
   do loop soma-se a duracao do arquivo, para nao repetir eventos. `REPLAY_SPEED=5`
   reproduz 5x mais rapido que o tempo real, entao o tempo de evento anda mais rapido que
   o relogio. Por isso as views do dashboard usam `max(event_ts)` como referencia de
-  "agora", e nao `now()`.
+  "agora", e nao `now()`. Ao reiniciar o producer, o replay continua a partir do ultimo
+  `event_ts` ja publicado no topico (lido do fim de cada particao), entao o tempo de
+  evento nunca volta (D12).
 - **Terminais por lista estatica** (D05): a API so informa o letreiro dos terminais, sem
   coordenadas; `common/terminals.py` traz 34 terminais com coordenadas aproximadas.
 - **Idempotencia no banco** (D07): `UNIQUE (vehicle_id, event_ts)` com
   `ON CONFLICT DO NOTHING`, upsert de metricas por janela e `alert_id` deterministico.
   O offset so e commitado depois da escrita, entao reprocessar nao duplica linhas
-  (at-least-once com efeito idempotente).
+  (at-least-once com efeito idempotente). Os consumers de metricas e alertas gravam no
+  banco antes de publicar no Kafka; em falha, os topicos `bus-metrics` e `bus-alerts`
+  podem ter mensagens repetidas, que um consumidor deve deduplicar pela chave/`alert_id`.
+- **Producer sem duplicatas**: descarta a leitura cujo `event_ts` e igual ou anterior ao
+  ultimo publicado para o mesmo veiculo (repetida ou fora de ordem).
+- **Robustez a mensagens invalidas** (D12): uma mensagem malformada e registrada e
+  ignorada (com offset commitado); nunca derruba um consumer.
 - **Estado em memoria** nos consumers de metricas e alertas (D08), por simplicidade.
 - **Uma imagem Python para todos os servicos** (D06) e um loop de processamento
   compartilhado em `common/stream_loop.py` (D10).
@@ -275,11 +289,15 @@ Resumo das principais; o registro completo (D01 a D11) esta em
 - **Terminais aproximados** (D05): coordenadas aproximadas e raio fixo de 400 m.
   Garagens e pontos finais que nao estao na lista podem gerar alertas falsos.
 - **Estado em memoria** (D08): ao reiniciar o consumer de metricas ou de alertas, a
-  janela em andamento pode sair incompleta e uma parada em curso recomeca a contagem.
+  janela em andamento pode sair incompleta e uma parada em curso recomeca a contagem;
+  uma parada que ja tinha alertado pode gerar um segundo alerta (D13).
+- **Uma instancia do consumer de metricas** (D13): as mensagens sao particionadas por
+  veiculo, entao duas instancias calculariam janelas parciais da mesma linha.
 - **Retencao de dados**: o Kafka guarda mensagens por 24 h (`KAFKA_LOG_RETENTION_HOURS` no
   `docker-compose.yml`),
   mas a tabela `bus_positions` cresce sem limpeza automatica. Em live, com toda a frota a
-  cada 30 s, isso vira milhoes de linhas por dia; use `make clean` para zerar os volumes.
+  cada 30 s, isso vira milhoes de linhas por dia. Use `make prune h=24` para apagar
+  leituras antigas ou `make clean` para zerar os volumes.
 
 ## Testes
 

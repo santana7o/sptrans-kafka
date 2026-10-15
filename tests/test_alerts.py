@@ -11,7 +11,8 @@ import pytest
 from common.schemas import ALERT_TYPE_STOPPED, BusAlert
 from common.tracker import SpeedTracker
 from consumers.alerts.detector import StoppedVehicleDetector
-from consumers.alerts.main import INSERT_SQL, AlertsProcessor, AlertsSink, alert_params
+from common.stream_loop import PostgresKafkaSink
+from consumers.alerts.main import INSERT_SQL, AlertsProcessor, alert_params
 from tests.conftest import BASE_TS, FREE_LAT, FREE_LON, LAPA_LAT, LAPA_LON, make_position
 
 ONE_KM_LAT = 1000.0 / (math.pi / 180 * 6_371_008.8)
@@ -249,29 +250,71 @@ class _Conn:
 
 
 class _Publisher:
-    def __init__(self):
+    def __init__(self, events_log: list | None = None, fail: bool = False):
         self.published = []
+        self.events_log = events_log if events_log is not None else []
+        self.fail = fail
 
     def publish(self, events):
+        self.events_log.append("kafka")
+        if self.fail:
+            raise RuntimeError("kafka fora")
         self.published.extend(events)
 
 
-def test_alerts_sink_publishes_then_writes_and_commits(test_settings):
-    pub, conn = _Publisher(), _Conn()
-    sink = AlertsSink(test_settings, pub)
-    sink._conn = conn
+def _sink(test_settings, conn, pub):
+    return PostgresKafkaSink(test_settings, pub, INSERT_SQL, alert_params, name="alerts",
+                             connect_fn=lambda settings, shutdown=None: conn)
+
+
+def test_sink_writes_and_commits_before_publishing(test_settings):
+    order: list[str] = []
+    conn = _Conn()
+    original_commit = conn.commit
+
+    def commit():
+        order.append("db")
+        original_commit()
+
+    conn.commit = commit
+    pub = _Publisher(order)
     alert = _alert()
-    sink.deliver([alert])
+    _sink(test_settings, conn, pub).deliver([alert])
+    assert order == ["db", "kafka"]
     assert pub.published == [alert]
+    assert conn.log[0][0] == INSERT_SQL
     assert conn.log[0][1][0]["alert_id"] == alert.alert_id and conn.commits == 1
 
 
-def test_alerts_sink_rolls_back_and_reset_closes(test_settings):
-    conn = _Conn(fail=True)
-    sink = AlertsSink(test_settings, _Publisher())
-    sink._conn = conn
+def test_sink_db_failure_rolls_back_and_does_not_publish(test_settings):
+    conn, pub = _Conn(fail=True), _Publisher()
+    sink = _sink(test_settings, conn, pub)
     with pytest.raises(RuntimeError):
         sink.deliver([_alert()])
-    assert conn.rollbacks == 1
+    assert conn.rollbacks == 1 and pub.published == []
     sink.reset()
-    assert conn.closed and sink._conn is None
+    assert conn.closed
+
+
+def test_sink_kafka_failure_after_db_commit_propagates(test_settings):
+    conn, pub = _Conn(), _Publisher(fail=True)
+    with pytest.raises(RuntimeError, match="kafka fora"):
+        _sink(test_settings, conn, pub).deliver([_alert()])
+    assert conn.commits == 1
+
+
+def test_sink_rollback_failure_does_not_mask_original_error(test_settings):
+    conn = _Conn(fail=True)
+
+    def broken_rollback():
+        raise OSError("conexao quebrada")
+
+    conn.rollback = broken_rollback
+    with pytest.raises(RuntimeError, match="conexao perdida"):
+        _sink(test_settings, conn, _Publisher()).deliver([_alert()])
+
+
+def test_sink_ignores_empty_outputs(test_settings):
+    conn, pub = _Conn(), _Publisher()
+    _sink(test_settings, conn, pub).deliver([])
+    assert conn.log == [] and pub.events_log == []

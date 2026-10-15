@@ -18,10 +18,11 @@ class MetricsProcessor:
         self.speed_status: Counter[str] = Counter()
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "MetricsProcessor":
+    def from_settings(cls, settings: Settings, partitions: int = 1) -> "MetricsProcessor":
         return cls(
             SpeedTracker(settings.max_speed_kmh, settings.min_interval_seconds, settings.max_interval_seconds),
-            WindowAggregator(settings.window_minutes, settings.window_lateness_seconds),
+            WindowAggregator(settings.window_minutes, settings.window_lateness_seconds,
+                             expected_partitions=partitions),
         )
 
     def process(self, positions: Sequence[BusPosition], partitions: Sequence[int] | None = None) -> list[LineMetric]:

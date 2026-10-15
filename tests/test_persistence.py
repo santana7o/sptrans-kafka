@@ -175,8 +175,6 @@ def test_decode_messages():
     assert [p.vehicle_id for p in positions] == ["a"] and malformed == 1
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: decode_messages so captura SchemaError; event_ts numerico levanta "
-                                       "AttributeError e derruba o consumer de persistencia (poison message)")
 def test_poison_message_is_counted_as_malformed():
     poison = FakeMsg(b'{"vehicle_id":"1","line_code":1,"direction":1,"lat":-23.5,"lon":-46.6,'
                      b'"event_ts":1760443200,"collected_at":"2026-10-14T12:00:00Z"}', 1)

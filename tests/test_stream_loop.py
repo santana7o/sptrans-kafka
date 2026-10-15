@@ -22,7 +22,7 @@ class RecordingProcessor:
         self.idle_calls = 0
         self.fail = fail
 
-    def process(self, positions):
+    def process(self, positions, partitions=None):
         self.batches.append(list(positions))
         if self.fail:
             raise ValueError("bug de logica")
@@ -180,8 +180,6 @@ def test_decode_positions_counts_malformed():
     assert [p.vehicle_id for p in positions] == ["a", "b"] and malformed == 1
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: decode_positions so captura SchemaError; mensagem com event_ts "
-                                       "numerico levanta AttributeError e derruba StreamLoop.step")
 def test_poison_message_does_not_crash_stream_loop():
     poison = FakeMsg(b'{"vehicle_id":"1","line_code":1,"direction":1,"lat":-23.5,"lon":-46.6,'
                      b'"event_ts":1760443200,"collected_at":"2026-10-14T12:00:00Z"}', 1)

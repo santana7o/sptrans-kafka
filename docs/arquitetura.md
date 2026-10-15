@@ -78,7 +78,7 @@ flowchart LR
 | kafka | `apache/kafka:3.8.1` (KRaft, broker e controller no mesmo no) | - |
 | kafka-init | `docker/create-topics.sh` (idempotente, `--if-not-exists`) | kafka saudavel |
 | kafka-ui | `provectuslabs/kafka-ui:v0.7.2`, porta 8080 | kafka saudavel |
-| postgres | `postgres:16-alpine`, porta 5432, aplica `sql/*.sql` na criacao do volume | - |
+| postgres | `postgres:16.4-alpine`, porta 5432 (somente 127.0.0.1), aplica `sql/*.sql` na criacao do volume | - |
 | producer | `python -m producer.main` | kafka saudavel, kafka-init concluido |
 | persistence | `python -m consumers.persistence.main` | kafka-init concluido, postgres saudavel |
 | metrics | `python -m consumers.metrics.main` | kafka-init concluido, postgres saudavel |
@@ -149,7 +149,9 @@ flowchart TD
   exato de `/Posicao`, com casos de borda plantados. Gravacoes reais feitas com
   `make record` tem o mesmo formato e entram pelo `REPLAY_FILE`.
 - Rebase (D04, `REPLAY_REBASE_TIMESTAMPS=true`): a primeira coleta passa a ter o horario
-  do inicio da reproducao. Os intervalos entre leituras de um mesmo veiculo sao
+  do inicio da reproducao, ou o ultimo `event_ts` ja publicado no topico mais um
+  intervalo, se este for posterior (lido do fim de cada particao por
+  `producer/topic_tail.py`). Assim reiniciar o producer nunca faz o tempo voltar (D12). Os intervalos entre leituras de um mesmo veiculo sao
   preservados, entao as velocidades continuam corretas. Como cada volta soma a duracao
   do arquivo, nenhuma leitura repete um `event_ts` ja publicado e a idempotencia do
   banco nao descarta as voltas seguintes.
@@ -164,8 +166,10 @@ flowchart TD
   com `flush` ao fim de cada coleta. Falhas de entrega sao contadas e registradas no log.
 - **Consumers**: auto commit desligado (`enable.auto.commit=false`) e
   `auto.offset.reset=earliest`. O offset so e commitado depois que o lote foi gravado no
-  banco (e, em metricas e alertas, depois que as saidas foram publicadas). Se o processo
-  cair antes do commit, as mensagens sao lidas de novo: entrega at-least-once.
+  banco (e, em metricas e alertas, depois que as saidas foram gravadas e em seguida
+  publicadas). Se o processo cair antes do commit, as mensagens sao lidas de novo:
+  entrega at-least-once. Os topicos `bus-metrics` e `bus-alerts` podem, portanto, ter
+  repeticoes; o banco nao, por ser idempotente.
 - **Idempotencia no banco** (D07), para que a releitura nao duplique dados:
   - `bus_positions`: `UNIQUE (vehicle_id, event_ts)` com `INSERT ... ON CONFLICT DO NOTHING`;
   - `line_metrics`: upsert pela chave `(line_code, direction, window_start)`;
@@ -190,7 +194,10 @@ relogio da maquina (D01).
   `event_ts`. Leituras fora de ordem (intervalo zero ou negativo) nao atualizam o estado.
 - **Janelas**: tumbling de `WINDOW_MINUTES` alinhadas ao relogio UTC
   (`common.timeutils.floor_to_window`). A leitura entra na janela do seu `event_ts`.
-- **Watermark**: `max(event_ts visto) - WINDOW_LATENESS_SECONDS`. Janelas com fim ate o
+- **Watermark**: menor valor entre os maiores `event_ts` de cada particao, menos
+  `WINDOW_LATENESS_SECONDS`. Enquanto alguma particao do topico ainda nao entregou dados,
+  o watermark nao avanca; uma particao sem dados novos deixa de segurar as demais quando
+  o tempo de evento avanca 3 janelas (D12). Janelas com fim ate o
   watermark sao emitidas uma unica vez; leituras atrasadas para uma janela ja fechada
   sao descartadas e contadas no log. Sem mensagens por `IDLE_FLUSH_SECONDS`, todas as
   janelas abertas sao emitidas.
